@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 from pyExtinction.pyExtinction import AtmosphericExtinction as AtmExt
 
-def main(indir=None, channel=None, plot=True):
+def main(indir=None, channel=None, plot=True, verb=False):
 
 	channel='BR' if channel is None else channel
 	indir = './' if indir is None else indir
@@ -21,7 +21,7 @@ def main(indir=None, channel=None, plot=True):
 			continue
 		elif verb: print('\tFound %d 1D spectra in %s' % (len(spex), indir) )
 
-
+		std_spex = [spec for spec in spex if spec.is_std]
 
 
 
@@ -42,6 +42,7 @@ class Spectrum:
 			self.err = np.sqrt(fits.getdata(self.varname))
 		self.channel=self.hdr['CHANNEL']
 		self.am = self.hdr['AIRMASS']
+		self.is_std = checkStd(self.hdr)
 
 	def __str__(self):
 		outstr = """
@@ -62,13 +63,22 @@ class Spectrum:
 
 
 
+
+
 def find1DSpectra(indir, channel):
 	fnames = glob.glob(indir+'/spec_*_%s.fits' % channel)
-	return fnames
+	return [Spectrum(ff) for ff in fnames]
 
 
 
 if __name__=='__main__':
 	parser = argparse.ArgumentParser(description="Computes atmosperic and instrumental response from a set a SNIFS standard star spectra, then applies corrections to the science spectra.")
 
-	parser.add_argument('--indir', '-d', help='Input directory containing the SNIFS 1D spectra.')
+	parser.add_argument('--indir', '-d', help='Input directory containing the SNIFS 1D spectra.', default=None, type=str)
+	parser.add_argument('--channel', '-c', help='Which channel to process. Default: BR', default='BR', choices=['B','R','BR','RB'])
+	parser.add_argument('--plot', '-p', help='Show plots? Default: False', default=False, action='store_true')
+	parser.add_argument('--verbose', '-v', help='Verbose output? Default: False', action='store_true')
+
+	args = parser.parse_args()
+	main(args.indir, args.channel, args.plot, args.verbose)
+
