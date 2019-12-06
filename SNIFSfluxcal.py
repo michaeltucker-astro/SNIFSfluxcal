@@ -1,6 +1,7 @@
 import numpy as np
-import argparse, glob
+import argparse, glob, os, sys
 from astropy.io import fits
+from lmfit import Parameters, minimize
 
 import matplotlib.pyplot as plt
 
@@ -21,8 +22,17 @@ def main(indir=None, channel=None, plot=True, verb=False):
 			continue
 		elif verb: print('\tFound %d 1D spectra in %s' % (len(spex), indir) )
 
-		std_spex = [spec for spec in spex if spec.is_std]
+		std_spex = findStdSpex(spex)
+		if len(std_spex) == 0:
+			print("WARNING: No standard star spectra found! No calibrations will be applied.")
+			continue
+		elif len(std_spex) < 3:
+			print('WARNING: Only %d standard star spectra found, flux calibration will likely be poor quality!' % (len(std_spex)))
+		elif verb:
+			print('\t%d standard star spectra found.' % (len(std_spex)))
 
+		if verb: print('\tFitting atm throughput and instr resp...')
+		
 
 
 class Spectrum:
@@ -33,35 +43,44 @@ class Spectrum:
 		else:
 			self.flux, self.hdr = fits.getdata(self.fname, header=True)
 
-		self.wl = hdr['CRVAL1'] + hdr['CDELT1']*np.arange(self.fl.size)
+		self.wl = self.hdr['CRVAL1'] + self.hdr['CDELT1']*np.arange(self.flux.size)
 		self.varname = os.path.dirname(self.fname)+'/var_'+os.path.basename(self.fname)
 		if not os.path.exists(self.varname):
 			print('WARNING: Failed to find variance file %s' % self.varname)
 			self.err = None
 		else:
 			self.err = np.sqrt(fits.getdata(self.varname))
-		self.channel=self.hdr['CHANNEL']
+
+		self.object = self.hdr['OBJECT']
+		self.exptime = self.hdr['EXPTIME']
+		self.channel=self.hdr['CHANNEL'][0]
 		self.am = self.hdr['AIRMASS']
-		self.is_std = checkStd(self.hdr)
+		self.jd = self.hdr['JD']
+		self.mjd = self.jd - 2400000.5
+		self.date = self.hdr['DATE-OBS']
 
 	def __str__(self):
 		outstr = """
-				### SNIFS spectrum ###
-				->File: %s
-				->Var: %s
-				->Channel: %s
-				->Object: %s
-				->Exptime: %.1f
-				->Airmass: %.1f
-				->MJD-OBS: %.5f
-				->DATE-OBS: %s
-				""" % (self.fname, self.varname, self.channel, self.object, self.exptime, 
+### SNIFS spectrum ###
+	->File: %s
+	->Var: %s
+	->Channel: %s
+	->Object: %s
+	->Exptime: %.1f
+	->Airmass: %.2f
+	->MJD-OBS: %.5f
+	->DATE-OBS: %s
+""" % (self.fname, self.varname, self.channel, self.object, self.exptime, 
 						self.am, self.mjd, self.date)
 		return outstr
 
 
-
-
+def findStdSpex(spex):
+	std_names, std_RA, std_DEC, std_Vmag, std_stype = np.genfromtxt('./standards.dat', comments='#', dtype=str, unpack=True)
+	std_spex = []
+	for ii, spec in enumerate(spex):
+		if spec.object in list(std_names): std_spex.append(spec)
+	return std_spex
 
 
 
