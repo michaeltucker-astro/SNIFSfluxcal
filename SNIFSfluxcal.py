@@ -2,6 +2,7 @@ import numpy as np
 import argparse, glob, os, sys
 from astropy.io import fits
 from lmfit import Parameters, minimize
+from spectres import spectres
 
 import matplotlib.pyplot as plt
 
@@ -32,6 +33,7 @@ def main(indir=None, channel=None, plot=True, verb=False):
 			print('\t%d standard star spectra found.' % (len(std_spex)))
 
 		if verb: print('\tFitting atm throughput and instr resp...')
+		fitTransmission(std_spex)
 		
 
 
@@ -50,6 +52,10 @@ class Spectrum:
 			self.err = None
 		else:
 			self.err = np.sqrt(fits.getdata(self.varname))
+
+		if self.flux.mean() > 1e-5:
+			self.flux *= 1e-16
+			self.err *= 1e-16
 
 		self.object = self.hdr['OBJECT']
 		self.exptime = self.hdr['EXPTIME']
@@ -74,6 +80,14 @@ class Spectrum:
 						self.am, self.mjd, self.date)
 		return outstr
 
+	def rebin(self, newwl):
+		keep = np.where(
+				(newwl > self.wl.min()+5.) &
+				(newwl < self.wl.max()-5.)
+			)[0]
+		scifl, scierr = spectres(newwl[keep], self.wl, self.flux, self.err)
+		return scifl, scierr, keep
+
 
 def findStdSpex(spex):
 	std_names, std_RA, std_DEC, std_Vmag, std_stype = np.genfromtxt('./standards.dat', comments='#', dtype=str, unpack=True)
@@ -87,6 +101,35 @@ def findStdSpex(spex):
 def find1DSpectra(indir, channel):
 	fnames = glob.glob(indir+'/spec_*_%s.fits' % channel)
 	return [Spectrum(ff) for ff in fnames]
+
+
+def fitTransmission(std_spex):
+	am_list, trans_list, terr_list = [],[],[]
+
+	for spec in std_spex:
+		stdwl, stdfl = readStdSpec(name=spec.object)
+		try:
+			scifl, scierr, stdidx = spec.rebin(stdwl)
+		except:
+			continue
+		trans = scifl / stdfl[stdidx]
+		terr = scierr / stdfl[stdidx]
+		am_list.append(spec.am)
+		trans_list.append(trans)
+		terr_list.append(terr)
+		plt.plot(stdwl[stdidx], trans, label=spec.object + '-'+str(am_list[-1]))
+	plt.legend()
+	plt.show()
+
+def readStdSpec(name):
+	fname = '/Users/skywalker/Documents/Science/Observing/SNIFS/SNIFSfluxcal/standard_spectra/%s.dat' % name
+	if not os.path.exists(fname):
+		raise IOError('Cannot find std star spectrum: %s' % fname)
+	else:
+		wl, mag, binsz = np.genfromtxt(fname, comments='#', dtype=float, unpack=True)
+		fnu = 10.0**( (mag+21.1) / -2.5 )
+		flam = 29979245800./wl**2.0 * fnu
+		return wl, flam
 
 
 
