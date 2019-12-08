@@ -3,10 +3,9 @@ from astropy.io import fits
 import os, sys
 from scipy.optimize import curve_fit
 from astropy.modeling.models import Gaussian2D
+from astropy.stats import sigma_clip
 
-import matplotlib.pyplot as plt
-
-def estimate_photometricity(guider_file, binsz=5, plot=False, verb=False):
+def estimate_photometricity(guider_file, binsz=5, stats=True, plot=False, verb=False):
 	if not os.path.exists(guider_file):
 		raise IOError('Cannot find guide video file: %s' % guider_file)
 	elif not guider_file.endswith('vid.fits'):
@@ -20,6 +19,9 @@ def estimate_photometricity(guider_file, binsz=5, plot=False, verb=False):
 	if verb:
 		print('Number of frames: %d' % frames.shape[0])
 
+	print('\n'+'#'*15)
+	print('Analyzing guider file: %s' % guider_file)
+
 	n = 0
 	fwhm = []
 	fwhm_err = []
@@ -32,33 +34,88 @@ def estimate_photometricity(guider_file, binsz=5, plot=False, verb=False):
 			_fwhm, _dfwhm, _flux, _dflux = fit2Dgauss(coadd)
 		except:
 			print('ERROR: Failed to fit guider image at n=%d:%d, skipping...' % (n, n+binsz))
-			_fwhm, _dfwhm, _flux, _dflux = np.nan, np.nan, np.nan, np.nan
-		print(_fwhm, _dfwhm, _flux, _dflux)
+			_fwhm, _dfwhm, _flux, _dflux = 2.0, 5.0, 0.0, 1e5
 		fwhm.append(_fwhm)
 		fwhm_err.append(_dfwhm)
 		flux.append(_flux)
 		flux_err.append(_dflux)
 		n += binsz
 
-	if plot:
+	FWHM, dFWHM, Flux, dFlux, is_photometric = measure_photometricity(fwhm, fwhm_err, flux, flux_err, stats=stats)
+
+	if stats:
+		print('FWHM: %.2f +/- %.2f"' % (FWHM, dFWHM))
+		print('Flux: %.1f +/- %.1f counts/frame' % (Flux, dFlux))
+		print('Photometric: %r' % is_photometric)
+
+
+
+	if plot and is_photometric is not None:
 		if verb: print('Plotting results...')
 		import matplotlib.pyplot as plt
 
-		"""
-		fig, ax = plt.subplots(111)
-		ax[0].errorbar(x, fwhm, yerr=fwhm_err, color='r', marker='.', ls=':')
-		ax[0].set_ylabel('FWHM', fontsize=15, color='r')
-		ax[0].set_xlabel('Coadd #')
-#		ax2 = ax[0].twinx()
-#		ax2.errorbar(x, flux, yerr=flux_err, color='b', marker='.', ls='--')
-#		ax2.set_ylabel('Flux', fontsize=15, color='b')
-		"""
 		x = np.arange(len(fwhm))+1.
 		plt.errorbar(x, fwhm, yerr=fwhm_err, color='r', marker='.', ls=':')
+		plt.ylabel('FWHM [arcsec]', color='r', weight='heavy', fontsize=15)
+		plt.xlabel('Frame #', fontsize=15)
+		plt.yticks(color='r')
 		ax2 = plt.gca().twinx()
 		ax2.errorbar(x, flux, yerr=flux_err, color='b', marker='.', ls='--')
+		plt.ylabel('Flux [counts]', color='b', weight='heavy', fontsize=15)
+		plt.yticks(color='b')
 		plt.tight_layout()
 		plt.show()
+
+	return {'FWHM':[FWHM, dFWHM], 'flux':[Flux, dFlux], 'photometric':is_photometric}
+
+def measure_photometricity(fwhm, fwhm_err, flux, flux_err, stats=False):
+	fwhm = np.array(fwhm)
+	fwhm_err = np.array(fwhm_err)
+	flux = np.array(flux)
+	flux_err = np.array(flux_err)
+
+	if np.isfinite(fwhm).sum() < len(fwhm):
+		return 0,0,0,0,False
+
+
+	is_photometric = True
+	fwhm_mean, fwhm_median, fwhm_std, _phot = compute_stats(fwhm, fwhm_err)
+	flux_mean, flux_median, flux_std, _phot = compute_stats(flux, flux_err)
+	is_photometric = is_photometric and _phot
+	if len(fwhm) < 10: is_photometric = None
+	elif len(fwhm[fwhm>=2.0]) > 0: is_photometric = False
+	elif fwhm_std > 0.1: is_photometric = False
+	elif fwhm_mean < 0.75: is_photometric = True
+
+	if not is_photometric:
+		return fwhm_mean, fwhm_std, flux_mean, flux_std, is_photometric
+
+	x = np.arange(fwhm.size)+1.
+	(m, b), cov = np.polyfit(x, flux, 1, cov=True, w=flux_err**-2.)
+	dm, db = np.sqrt(np.diag(cov))
+	if stats:
+		print('Linear fit: m=(%.2g +/- %.2g); b=(%.2g +/- %.2g)' % (m, dm, b, db))
+
+	if abs(m/dm) > 3.: is_photometric=False
+	return fwhm_mean, fwhm_std, flux_mean, flux_std, is_photometric
+
+def compute_stats(arr, err):
+	mean = np.average(arr, weights=err**-1.)
+	median = np.median(arr)
+	std = np.std(arr, ddof=1)
+
+	if abs(mean - median)/std > 0.5:
+		return mean, median, std, False
+
+	mask = sigma_clip(arr, maxiters=None, sigma=4).mask
+	if mask.sum() > 0:
+		_phot = False
+	else:
+		_phot=True
+
+	return mean, median, std, _phot
+
+
 
 
 def fit2Dgauss(image):
@@ -67,9 +124,6 @@ def fit2Dgauss(image):
 		fit = gauss(*xy)
 		return fit.ravel()
 
-
-	plt.imshow(image, origin='lower')
-	plt.show()
 	bounds = (
 		[np.median(image), 0.0, 0.0, 0.0, 0.0],
 		[image.sum(), image.shape[0], image.shape[0], image.shape[0], image.shape[0]]
@@ -85,22 +139,13 @@ def fit2Dgauss(image):
 	flux_err = flux * np.sqrt((perr[3]/pfit[3])**2.0 + (perr[4]/pfit[4])**2.0)
 
 	fwhm = 2.35 * np.mean(pfit[3:5]) * 0.2
-	fwhm_err = 2.35 * np.sqrt( ((perr[3:5])**2.0).sum() ) / 2.0 * 0.2
+	fwhm_err = 2.35 * np.sqrt( ((perr[3:5])**2.0).sum() ) / 2.0 * 0.24
 
 	return fwhm, fwhm_err, flux, flux_err
 
 def readGuiderFile(fname):
-	data = fits.getdata(fname)
-	coadd = data.sum(axis=0)
-	plt.imshow(coadd, origin='lower')
-	plt.show()
-	std = []
-	for i in range(4):
-		slice = data[:, 32*i:32*(i+1), :]
-		plt.imshow(slice, origin='lower')
-		plt.show()
-	idx = np.array(std).argmax()
-	print('Guide star detected on chip: %d' % (idx+1))
+	data, hdr = fits.getdata(fname, header=True)
+	idx = int(list(str(hdr['GSREGION'])).index('2')/2)
 	data = data[:, 1:-1, idx*32+1:(idx+1)*32-1].copy()
 	return data
 
