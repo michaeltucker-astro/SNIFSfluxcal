@@ -105,6 +105,7 @@ def find1DSpectra(indir, channel):
 
 def fitTransmission(std_spex):
 	am_list, trans_list, terr_list = [],[],[]
+	RespFitter(am_list, trans_list, terr_list)
 
 	for spec in std_spex:
 		stdwl, stdfl = readStdSpec(name=spec.object)
@@ -122,7 +123,39 @@ def fitTransmission(std_spex):
 	plt.show()
 
 class RespFitter:
-	def __init__(self, am_list, trans_list, dichroic=False, atm=True, instr=True, verb=False)
+	def __init__(self, wl, am_list, trans_list, terr_list, dichroic=False, atm=True, instr=True, verb=False):
+		self.wl = wl
+		self.am_list = am_list
+		self.trans_list = trans_list
+		self.fit_components = {
+			'dichroic':dichroic,
+			'atm':atm,
+			'instr':instr
+		}
+		self.initialize()
+
+	def initialize(self):
+		self.atm_model = AtmExt.ExtinctionModel(lbda=self.wl)
+		self.atm_model.setDefaultParams()
+		self.P, self.I_O3, self.tau, self.a_dot = self.atm_model.p
+
+	def evaluate(self):
+		self.atm_model.setParams([self.P, self.I_O3, self.tau, self.a_dot])
+		ext = self.atm_model.extinction()
+		trans = 10.0**(-0.4*ext)
+		self.updateInstrResp()
+		trans *= self.instr_resp
+		self.updateDichResp()
+		trans *= self.dich_resp
+		return trans
+
+	def fit(self):
+		params = Parameters()
+		params.add('P', value=self.P, vary=False)
+		params.add('I_O3', value=self.I_O3, vary=True, bounds=(150., 400.))
+		params.add('tau', value=self.tau, vary=True, bounds=(0.001, 0.1))
+		params.add('a_dot', value=self.a_dot, vary=True, bounds=(1,5))
+		
 
 def readStdSpec(name):
 	fname = '/Users/skywalker/Documents/Science/Observing/SNIFS/SNIFSfluxcal/standard_spectra/%s.dat' % name
