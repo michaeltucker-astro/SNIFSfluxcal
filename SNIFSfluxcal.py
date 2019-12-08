@@ -121,6 +121,9 @@ def fitTransmission(std_spex):
 	plt.legend()
 	plt.show()
 
+class RespFitter:
+	def __init__(self, am_list, trans_list, dichroic=False, atm=True, instr=True, verb=False)
+
 def readStdSpec(name):
 	fname = '/Users/skywalker/Documents/Science/Observing/SNIFS/SNIFSfluxcal/standard_spectra/%s.dat' % name
 	if not os.path.exists(fname):
