@@ -1,9 +1,9 @@
 import numpy as np
-import argparse, glob, os, sys
+import glob, os, sys
 from astropy.io import fits
 from lmfit import Parameters, minimize
 from spectres import spectres
-
+import ipdb
 import matplotlib.pyplot as plt
 
 
@@ -105,7 +105,6 @@ def find1DSpectra(indir, channel):
 
 def fitTransmission(std_spex):
 	am_list, trans_list, terr_list = [],[],[]
-	RespFitter(am_list, trans_list, terr_list)
 
 	for spec in std_spex:
 		stdwl, stdfl = readStdSpec(name=spec.object)
@@ -114,23 +113,33 @@ def fitTransmission(std_spex):
 		except:
 			continue
 		trans = scifl / stdfl[stdidx]
+		trans_interp = np.interp(spec.wl, stdwl[stdidx], trans)
 		terr = scierr / stdfl[stdidx]
+		terr_interp = np.interp(spec.wl, stdwl[stdidx], terr)
 		am_list.append(spec.am)
-		trans_list.append(trans)
-		terr_list.append(terr)
-		plt.plot(stdwl[stdidx], trans, label=spec.object + '-'+str(am_list[-1]))
-	plt.legend()
-	plt.show()
+		trans_list.append(trans_interp)
+		terr_list.append(terr_interp)
+
+	fit = RespFitter(std_spex[0].wl, am_list, trans_list, terr_list)
+	ipdb.set_trace()
+
 
 class RespFitter:
 	def __init__(self, wl, am_list, trans_list, terr_list, dichroic=False, atm=True, instr=True, verb=False):
 		self.wl = wl
 		self.am_list = am_list
 		self.trans_list = trans_list
+		self.terr_list = terr_list
 		self.fit_components = {
 			'dichroic':dichroic,
 			'atm':atm,
 			'instr':instr
+		}
+
+		self.default_params = {
+			'I_O3':[260.0, 50.0],
+			'tau':[0.007, 0.004],
+			'a_dot':[1.0, 3.0]
 		}
 		self.initialize()
 
@@ -139,23 +148,65 @@ class RespFitter:
 		self.atm_model.setDefaultParams()
 		self.P, self.I_O3, self.tau, self.a_dot = self.atm_model.p
 
-	def evaluate(self):
-		self.atm_model.setParams([self.P, self.I_O3, self.tau, self.a_dot])
-		ext = self.atm_model.extinction()
+	def compute_atm_trans(self, am):
+		ext = self.atm_model.extinction()[0] * am
 		trans = 10.0**(-0.4*ext)
-		self.updateInstrResp()
-		trans *= self.instr_resp
-		self.updateDichResp()
-		trans *= self.dich_resp
 		return trans
+
+	def compute_residuals(self):
+		residuals = []
+		dich_trans = self.compute_dich_trans()
+		instr_trans = self.compute_instr_trans()
+		for am, std_trans, std_terr in zip(self.am_list, self.trans_list, self.terr_list):
+			atm_trans = self.compute_atm_trans(am=am)
+			trans = atm_trans * dich_trans * instr_trans
+			resid = (trans - std_trans)**2.0
+			residuals.append(resid)
+		return np.stack(residuals)
+
+	def compute_instr_trans(self):
+		return 0.01*np.ones_like(self.wl)
+
+	def compute_dich_trans(self):
+		return np.ones_like(self.wl)
+
+	def compute_priors_penalty(self):
+		p0, dp0 = self.default_params['I_O3']
+		term1 = ((p0-self.I_O3)/dp0)**2.0
+		p0, dp0 = self.default_params['a_dot']
+		term2 = ((p0-self.a_dot)/dp0)**2.0
+		p0, dp0 = self.default_params['tau']
+		lp0 = np.log(self.tau/p0)
+		ldp0 = np.log(dp0)
+		term3 = (lp0/ldp0)**2.0
+		return term1*term2*term3
+
+	def penalty_fcn(self, params):
+		pars = params.valuesdict()
+		self.I_O3 = pars['I_O3']
+		self.tau = pars['tau']
+		self.a_dot = pars['a_dot']
+		self.P = pars['P']
+
+		self.atm_model.setParams([self.P, self.I_O3, self.tau, self.a_dot])
+
+		chi2 = self.compute_residuals()
+		psi2 = self.compute_priors_penalty()
+		total_chi2 = np.sqrt( chi2 + psi2 )
+		return total_chi2
 
 	def fit(self):
 		params = Parameters()
 		params.add('P', value=self.P, vary=False)
-		params.add('I_O3', value=self.I_O3, vary=True, bounds=(150., 400.))
-		params.add('tau', value=self.tau, vary=True, bounds=(0.001, 0.1))
-		params.add('a_dot', value=self.a_dot, vary=True, bounds=(1,5))
-		
+		params.add('I_O3', value=self.I_O3, vary=True, min=150., max=400.)
+		params.add('tau', value=self.tau, vary=True, min=0.001, max=0.1)
+		params.add('a_dot', value=self.a_dot, vary=True, min=1,max=5)
+
+		self.result = minimize(self.penalty_fcn, params=params)
+
+
+
+
 
 def readStdSpec(name):
 	fname = '/Users/skywalker/Documents/Science/Observing/SNIFS/SNIFSfluxcal/standard_spectra/%s.dat' % name
@@ -170,6 +221,7 @@ def readStdSpec(name):
 
 
 if __name__=='__main__':
+	import argparse
 	parser = argparse.ArgumentParser(description="Computes atmosperic and instrumental response from a set a SNIFS standard star spectra, then applies corrections to the science spectra.")
 
 	parser.add_argument('--indir', '-d', help='Input directory containing the SNIFS 1D spectra.', default=None, type=str)
