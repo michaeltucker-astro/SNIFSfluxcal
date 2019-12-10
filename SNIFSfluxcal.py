@@ -150,7 +150,7 @@ class RespFitter:
 
 	def compute_atm_trans(self, am):
 		ext = self.atm_model.extinction()[0] * am
-		trans = 10.0**(-0.4*ext)
+		trans = 10.0**(-0.4*ext) * self.gray_coeff
 		return trans
 
 	def compute_residuals(self):
@@ -161,6 +161,15 @@ class RespFitter:
 			atm_trans = self.compute_atm_trans(am=am)
 			trans = atm_trans * dich_trans * instr_trans
 			resid = (trans - std_trans)**2.0
+			bad = np.where(
+				(self.wl >= 8900.) |
+				((self.wl >= 6270.) & (self.wl <=6332.)) |
+				((self.wl>=6862.)&(self.wl<=6965.)) |
+				((self.wl>=7143.)&(self.wl<=7398.0))|
+				((self.wl>=7585.)&(self.wl<=7703.))|
+				((self.wl>=8083.)&(self.wl<=8421.))
+				)[0]
+			resid[bad] = np.nan
 			residuals.append(resid)
 		return np.stack(residuals)
 
@@ -202,7 +211,7 @@ class RespFitter:
 		params.add('tau', value=self.tau, vary=True, min=0.001, max=0.1)
 		params.add('a_dot', value=self.a_dot, vary=True, min=1,max=5)
 
-		self.result = minimize(self.penalty_fcn, params=params)
+		self.result = minimize(self.penalty_fcn, params=params, nan_policy='omit')
 
 
 
