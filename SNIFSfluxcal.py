@@ -9,6 +9,11 @@ import matplotlib.pyplot as plt
 
 from pyExtinction.pyExtinction import AtmosphericExtinction as AtmExt
 
+TELLURIC_REGIONS = [
+	[],
+	[]
+]
+
 def main(indir=None, channel=None, plot=True, verb=False):
 
 	channel='BR' if channel is None else channel
@@ -52,10 +57,6 @@ class Spectrum:
 			self.err = None
 		else:
 			self.err = np.sqrt(fits.getdata(self.varname))
-
-		if self.flux.mean() > 1e-5:
-			self.flux *= 1e-16
-			self.err *= 1e-16
 
 		self.object = self.hdr['OBJECT']
 		self.exptime = self.hdr['EXPTIME']
@@ -104,12 +105,12 @@ def find1DSpectra(indir, channel):
 
 
 def fitTransmission(std_spex):
-	am_list, trans_list, terr_list = [],[],[]
+	airmasses, log_trans, log_terr = [],[],[]
 
 	for spec in std_spex:
 		stdwl, stdfl = readStdSpec(name=spec.object)
 		try:
-			scifl, scierr, stdidx = spec.rebin(stdwl)
+			obsfl, obserr, stdidx = spec.rebin(stdwl)
 		except:
 			continue
 		trans = scifl / stdfl[stdidx]
@@ -125,23 +126,28 @@ def fitTransmission(std_spex):
 
 
 class RespFitter:
-	def __init__(self, wl, am_list, trans_list, terr_list, dichroic=False, atm=True, instr=True, verb=False):
+	def __init__(self, wl, airmasses, trans_spex, terr_spex, dichroic=False, atm=True, instr=True, verb=False):
 		self.wl = wl
-		self.am_list = am_list
-		self.trans_list = trans_list
-		self.terr_list = terr_list
-		self.fit_components = {
-			'dichroic':dichroic,
-			'atm':atm,
-			'instr':instr
-		}
+		self.airmasses = airmasses
+		self.trans_spex = trans_spex
+		self.terr_spex = terr_spex
+
+		self.fit_dichroic = dichroic
+		self.fit_atm = atm
+		self.fit_instr_resp = instr
+		self.verb = verb
 
 		self.default_params = {
 			'I_O3':[260.0, 50.0],
 			'tau':[0.007, 0.004],
 			'a_dot':[1.0, 3.0]
 		}
+
+		self.gray_coeff = np.ones_like(self.trans_spex)
+
 		self.initialize()
+
+
 
 	def initialize(self):
 		self.atm_model = AtmExt.ExtinctionModel(lbda=self.wl)
@@ -150,7 +156,7 @@ class RespFitter:
 
 	def compute_atm_trans(self, am):
 		ext = self.atm_model.extinction()[0] * am
-		trans = 10.0**(-0.4*ext) * self.gray_coeff
+		trans = 10.0**(-0.4*ext)
 		return trans
 
 	def compute_residuals(self):
@@ -174,10 +180,20 @@ class RespFitter:
 		return np.stack(residuals)
 
 	def compute_instr_trans(self):
+		"""
+		need to implement low-order spline for instrumental response
+		concern: instr_trans should be called 
+		"""
 		return 0.01*np.ones_like(self.wl)
 
 	def compute_dich_trans(self):
-		return np.ones_like(self.wl)
+		if self.fit_dichroic:
+			# do something here
+			pass
+			dich_trans = None
+		else:
+			dich_trans = np.ones_like(self.wl)
+		return dich_trans
 
 	def compute_priors_penalty(self):
 		p0, dp0 = self.default_params['I_O3']
